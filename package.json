@@ -2,13 +2,19 @@
   "name": "lobster-checkup-v4",
   "version": "0.1.0",
   "private": true,
+  "bin": {
+    "lobster-checkup": "./dist/cli/index.js"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:cli": "tsc -p tsconfig.cli.json",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "checkup": "tsx src/cli/index.ts"
   },
   "dependencies": {
+    "@upstash/redis": "^1.37.0",
     "next": "16.2.4",
     "react": "19.2.4",
     "react-dom": "19.2.4"
@@ -21,6 +27,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
     "tailwindcss": "^4",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }
