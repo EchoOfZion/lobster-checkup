@@ -1,18 +1,9 @@
-// ============================================================
-// 龙虾体检 v4 — Claude Code JSONL 解析器
-// ============================================================
+import type { NormalizedMessage, NormalizedSession, NormalizedTurn, SessionCandidate, ToolCall } from '../core/types'
 
-import { estimateCost } from '../lib/pricing'
-import type {
-  SessionParser, ParsedSession, SessionMeta, Message,
-  ContentBlock, Turn, ToolCallRecord,
-} from './types'
-
-// --- Raw JSONL record types (Claude Code format) ---
-
-interface RawRecord {
-  type: string
+type ClaudeRecord = {
+  type?: string
   timestamp?: string
+  sessionId?: string
   message?: {
     role?: string
     model?: string
@@ -20,291 +11,230 @@ interface RawRecord {
     stop_reason?: string
     stopReason?: string
     usage?: Record<string, unknown>
-    [key: string]: unknown
   }
-  [key: string]: unknown
 }
 
-// --- Content block normalization ---
+export function parseClaudeCodeSession(candidate: SessionCandidate, lines: string[]): NormalizedSession {
+  const messages: NormalizedMessage[] = []
+  let sessionId = candidate.id
+  let startedAt: string | undefined
 
-function normalizeContentBlocks(content: unknown): ContentBlock[] {
-  if (typeof content === 'string') return [{ type: 'text', text: content }]
-  if (!Array.isArray(content)) return []
+  for (const line of lines) {
+    const record = parseJson<ClaudeRecord>(line)
+    if (!record) continue
 
-  return content.map((block: Record<string, unknown>): ContentBlock => {
-    switch (block.type) {
-      case 'text':
-        return { type: 'text', text: (block.text as string) || '' }
-
-      case 'thinking':
-        return { type: 'thinking', text: (block.thinking as string) || (block.text as string) || '' }
-
-      case 'tool_use':
-        return {
-          type: 'toolCall',
-          id: (block.id as string) || '',
-          name: (block.name as string) || '',
-          args: (block.input as Record<string, any>) || {},
-        }
-
-      case 'tool_result': {
-        let resultText = ''
-        const innerContent = block.content
-        if (typeof innerContent === 'string') {
-          resultText = innerContent
-        } else if (Array.isArray(innerContent)) {
-          resultText = innerContent
-            .filter((c: Record<string, unknown>) => c.type === 'text')
-            .map((c: Record<string, unknown>) => c.text)
-            .join('\n')
-        }
-        return {
-          type: 'toolResult',
-          toolCallId: (block.tool_use_id as string) || '',
-          content: resultText,
-          isError: !!(block.is_error || block.isError),
-        }
-      }
-
-      default:
-        return { type: 'text', text: (block.text as string) || '' }
+    if (record.type === 'summary') {
+      sessionId = record.sessionId || sessionId
+      startedAt = record.timestamp || startedAt
+      continue
     }
-  })
-}
 
-// --- Stop reason inference ---
-
-function inferStopReason(msg: Record<string, unknown>): 'stop' | 'toolUse' | 'maxTokens' {
-  const sr = (msg.stopReason || msg.stop_reason) as string | undefined
-  if (sr) {
-    if (sr === 'end_turn' || sr === 'stop') return 'stop'
-    if (sr === 'tool_use' || sr === 'toolUse') return 'toolUse'
-    if (sr === 'max_tokens' || sr === 'maxTokens') return 'maxTokens'
+    if ((record.type === 'user' || record.type === 'assistant') && record.message) {
+      messages.push(normalizeClaudeMessage(record))
+      startedAt = startedAt || record.timestamp
+    }
   }
 
-  // Infer from content
-  const content = msg.content
-  if (Array.isArray(content) && content.length > 0) {
-    const last = content[content.length - 1] as Record<string, unknown>
-    if (last.type === 'tool_use') return 'toolUse'
-    if (last.type === 'text') return 'stop'
+  return buildSession(candidate, sessionId, startedAt, messages)
+}
+
+function normalizeClaudeMessage(record: ClaudeRecord): NormalizedMessage {
+  const message = record.message || {}
+  const role = record.type === 'assistant' ? 'assistant' : 'user'
+  const parsed = readContent(message.content)
+  return {
+    ...parsed,
+    role,
+    text: parsed.text,
+    timestamp: record.timestamp,
+    model: role === 'assistant' ? message.model : undefined,
+    stopReason: role === 'assistant' ? normalizeStopReason(message.stop_reason || message.stopReason, message.content) : undefined,
+    usage: role === 'assistant' ? normalizeUsage(message.usage) : undefined,
+  }
+}
+
+export function readContent(content: unknown): { text: string; toolCalls: ToolCall[]; toolResults: Map<string, { result: string; isError: boolean }> } {
+  if (typeof content === 'string') return { text: content, toolCalls: [], toolResults: new Map() }
+  if (!Array.isArray(content)) return { text: '', toolCalls: [], toolResults: new Map() }
+
+  const text: string[] = []
+  const toolCalls: ToolCall[] = []
+  const toolResults = new Map<string, { result: string; isError: boolean }>()
+
+  for (const block of content as Record<string, unknown>[]) {
+    if (block.type === 'text') text.push(String(block.text || ''))
+    if (block.type === 'tool_use') {
+      toolCalls.push({
+        id: String(block.id || ''),
+        name: String(block.name || ''),
+        args: asRecord(block.input),
+        isError: false,
+      })
+    }
+    if (block.type === 'tool_result') {
+      toolResults.set(String(block.tool_use_id || ''), {
+        result: contentToText(block.content),
+        isError: Boolean(block.is_error || block.isError),
+      })
+    }
   }
 
-  return 'stop'
+  return { text: text.join('\n'), toolCalls, toolResults }
 }
 
-// --- Usage normalization ---
-
-function normalizeUsage(usage: Record<string, unknown> | undefined, model: string | undefined): Message['usage'] | undefined {
-  if (!usage) return undefined
-
-  const inputTokens = (usage.input_tokens as number) || (usage.input as number) || 0
-  const outputTokens = (usage.output_tokens as number) || (usage.output as number) || 0
-
-  // Check if cost is directly available
-  const costObj = usage.cost as Record<string, unknown> | undefined
-  const directCost = costObj && typeof costObj.total === 'number' ? costObj.total : undefined
-
-  const cost = directCost ?? estimateCost(model || 'unknown', inputTokens, outputTokens)
-
-  return { inputTokens, outputTokens, cost }
-}
-
-// --- Turn building ---
-
-function buildTurns(messages: Message[]): Turn[] {
-  const turns: Turn[] = []
+export function buildSession(
+  candidate: SessionCandidate,
+  sessionId: string,
+  startedAt: string | undefined,
+  messages: NormalizedMessage[],
+): NormalizedSession {
+  const turns: NormalizedTurn[] = []
   let current: {
-    userMsg: Message | null
-    assistantMsgs: Message[]
-    toolCalls: ToolCallRecord[]
-    cost: number
-    toolCallCount: number
+    userText: string
+    assistantText: string[]
+    toolCalls: ToolCall[]
+    finalStopReason: 'stop' | 'toolUse' | 'maxTokens'
+    costUsd: number
+    inputTokens: number
+    outputTokens: number
   } | null = null
 
-  function flushTurn() {
+  const flush = () => {
     if (!current) return
-    const lastAssistant = current.assistantMsgs[current.assistantMsgs.length - 1]
     turns.push({
       index: turns.length,
-      userMessage: current.userMsg || {
-        role: 'user', content: [], timestamp: undefined, usage: undefined,
-      } as unknown as Message,
-      assistantMessages: current.assistantMsgs,
+      userText: current.userText,
+      assistantText: current.assistantText.filter(Boolean).join('\n'),
       toolCalls: current.toolCalls,
-      totalCost: current.cost,
-      toolCallCount: current.toolCallCount,
-      finalStopReason: lastAssistant?.stopReason || 'stop',
+      finalStopReason: current.finalStopReason,
+      costUsd: current.costUsd,
+      inputTokens: current.inputTokens,
+      outputTokens: current.outputTokens,
     })
     current = null
   }
 
-  for (const msg of messages) {
-    if (msg.role === 'user') {
-      // Check if this is actually a tool_result message (Claude Code sends these as role:user)
-      const hasToolResult = msg.content.some(b => b.type === 'toolResult')
-      if (hasToolResult && current) {
-        // Attach tool results to current turn
-        for (const block of msg.content) {
-          if (block.type === 'toolResult') {
-            // Update matching tool call record
-            const tc = current.toolCalls.find(t => t.id === block.toolCallId)
-            if (tc) {
-              tc.result = block.content
-              tc.isError = block.isError
-            } else {
-              current.toolCalls.push({
-                id: block.toolCallId,
-                name: '',
-                args: {},
-                result: block.content,
-                isError: block.isError,
-              })
-            }
-          }
-        }
-        continue
+  for (const message of messages) {
+    const parsed = readContentFromMessage(message)
+    if (parsed.toolResults.size > 0 && current) {
+      attachResults(current.toolCalls, parsed.toolResults)
+      continue
+    }
+
+    if (message.role === 'user') {
+      flush()
+      current = {
+        userText: message.text,
+        assistantText: [],
+        toolCalls: [],
+        finalStopReason: 'stop',
+        costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
       }
+      continue
+    }
 
-      // New user turn
-      flushTurn()
-      current = { userMsg: msg, assistantMsgs: [], toolCalls: [], cost: 0, toolCallCount: 0 }
-
-    } else if (msg.role === 'assistant') {
+    if (message.role === 'assistant') {
       if (!current) {
-        current = { userMsg: null, assistantMsgs: [], toolCalls: [], cost: 0, toolCallCount: 0 }
-      }
-      current.assistantMsgs.push(msg)
-      if (msg.usage) current.cost += msg.usage.cost
-
-      // Extract tool calls
-      for (const block of msg.content) {
-        if (block.type === 'toolCall') {
-          current.toolCalls.push({
-            id: block.id,
-            name: block.name,
-            args: block.args,
-            result: undefined,
-            isError: false,
-          })
-          current.toolCallCount++
+        current = {
+          userText: '',
+          assistantText: [],
+          toolCalls: [],
+          finalStopReason: 'stop',
+          costUsd: 0,
+          inputTokens: 0,
+          outputTokens: 0,
         }
       }
+      current.assistantText.push(message.text)
+      current.toolCalls.push(...parsed.toolCalls)
+      current.finalStopReason = message.stopReason || 'stop'
+      current.costUsd += message.usage?.costUsd || 0
+      current.inputTokens += message.usage?.inputTokens || 0
+      current.outputTokens += message.usage?.outputTokens || 0
     }
   }
+  flush()
 
-  flushTurn()
-  return turns
+  const usage = turns.reduce(
+    (sum, turn) => ({
+      inputTokens: sum.inputTokens + turn.inputTokens,
+      outputTokens: sum.outputTokens + turn.outputTokens,
+      costUsd: sum.costUsd + turn.costUsd,
+    }),
+    { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+  )
+
+  return {
+    source: candidate.source,
+    id: sessionId,
+    transcriptPath: candidate.transcriptPath,
+    projectPath: candidate.projectPath,
+    agentId: candidate.agentId,
+    startedAt,
+    endedAt: messages[messages.length - 1]?.timestamp,
+    turns,
+    usage,
+  }
 }
 
-// --- Parser implementation ---
+function readContentFromMessage(message: NormalizedMessage): ReturnType<typeof readContent> {
+  const parsed = message as NormalizedMessage & Partial<ReturnType<typeof readContent>>
+  return {
+    text: parsed.text,
+    toolCalls: parsed.toolCalls || [],
+    toolResults: parsed.toolResults || new Map(),
+  }
+}
 
-export const claudeCodeParser: SessionParser = {
-  platform: 'claude-code',
+export function normalizeStopReason(raw: unknown, content: unknown): 'stop' | 'toolUse' | 'maxTokens' {
+  if (raw === 'tool_use' || raw === 'toolUse') return 'toolUse'
+  if (raw === 'max_tokens' || raw === 'maxTokens') return 'maxTokens'
+  if (raw === 'end_turn' || raw === 'stop') return 'stop'
+  if (Array.isArray(content) && content.some((block) => (block as Record<string, unknown>).type === 'tool_use')) return 'toolUse'
+  return 'stop'
+}
 
-  detect(lines: string[]): boolean {
-    // Claude Code JSONL has top-level type: "user" or "assistant" or "summary"
-    for (const line of lines.slice(0, 10)) {
-      try {
-        const rec = JSON.parse(line)
-        if (rec.type === 'user' || rec.type === 'assistant' || rec.type === 'summary') {
-          return true
-        }
-      } catch { /* skip */ }
-    }
-    return false
-  },
+export function normalizeUsage(usage: Record<string, unknown> | undefined) {
+  if (!usage) return undefined
+  const cost = usage.cost as Record<string, unknown> | number | undefined
+  return {
+    inputTokens: numberValue(usage.input_tokens) || numberValue(usage.input),
+    outputTokens: numberValue(usage.output_tokens) || numberValue(usage.output),
+    costUsd: typeof cost === 'number' ? cost : numberValue(cost?.total),
+  }
+}
 
-  parse(lines: string[], filePath: string): ParsedSession {
-    const meta: SessionMeta = {
-      id: filePath.split('/').pop()?.replace('.jsonl', '') || 'unknown',
-      platform: 'claude-code',
-      startTime: '',
-    }
+function attachResults(toolCalls: ToolCall[], results: Map<string, { result: string; isError: boolean }>): void {
+  for (const toolCall of toolCalls) {
+    const result = results.get(toolCall.id)
+    if (!result) continue
+    toolCall.result = result.result
+    toolCall.isError = result.isError
+  }
+}
 
-    const messages: Message[] = []
-    let currentModel = 'unknown'
+function parseJson<T>(line: string): T | null {
+  try {
+    return JSON.parse(line) as T
+  } catch {
+    return null
+  }
+}
 
-    for (const line of lines) {
-      let rec: RawRecord
-      try { rec = JSON.parse(line) } catch { continue }
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
 
-      if (rec.type === 'summary') {
-        // Session metadata
-        if (rec.sessionId) meta.id = rec.sessionId as string
-        if (rec.timestamp) meta.startTime = rec.timestamp as string
-        continue
-      }
+function contentToText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) {
+    return value.map((item) => typeof item === 'string' ? item : String((item as Record<string, unknown>).text || '')).join('\n')
+  }
+  return value == null ? '' : String(value)
+}
 
-      if (rec.type === 'user' || rec.type === 'assistant') {
-        const msg = rec.message
-        if (!msg) continue
-
-        if (rec.type === 'assistant' && msg.model) {
-          currentModel = msg.model as string
-        }
-
-        const normalized: Message = {
-          role: rec.type as 'user' | 'assistant',
-          content: normalizeContentBlocks(msg.content),
-          model: rec.type === 'assistant' ? (msg.model as string || currentModel) : undefined,
-          stopReason: rec.type === 'assistant' ? inferStopReason(msg) : undefined,
-          timestamp: rec.timestamp as string || undefined,
-          usage: rec.type === 'assistant'
-            ? normalizeUsage(msg.usage as Record<string, unknown> | undefined, msg.model as string || currentModel)
-            : undefined,
-        }
-
-        if (!meta.startTime && normalized.timestamp) {
-          meta.startTime = normalized.timestamp
-        }
-
-        messages.push(normalized)
-      }
-    }
-
-    // Set end time
-    const lastMsg = messages[messages.length - 1]
-    if (lastMsg?.timestamp) meta.endTime = lastMsg.timestamp
-
-    // Calculate duration
-    if (meta.startTime && meta.endTime) {
-      const start = new Date(meta.startTime).getTime()
-      const end = new Date(meta.endTime).getTime()
-      if (!isNaN(start) && !isNaN(end)) {
-        meta.durationMinutes = Math.round((end - start) / 60000)
-      }
-    }
-
-    // Build turns
-    const turns = buildTurns(messages)
-
-    // Aggregate stats
-    let totalCost = 0
-    let totalToolCalls = 0
-    const modelUsage: ParsedSession['modelUsage'] = {}
-
-    for (const msg of messages) {
-      if (msg.usage) {
-        totalCost += msg.usage.cost
-        const m = msg.model || 'unknown'
-        if (!modelUsage[m]) modelUsage[m] = { inputTokens: 0, outputTokens: 0, cost: 0 }
-        modelUsage[m].inputTokens += msg.usage.inputTokens
-        modelUsage[m].outputTokens += msg.usage.outputTokens
-        modelUsage[m].cost += msg.usage.cost
-      }
-      for (const block of msg.content) {
-        if (block.type === 'toolCall') totalToolCalls++
-      }
-    }
-
-    return {
-      meta,
-      messages,
-      turns,
-      totalCost,
-      totalToolCalls,
-      modelUsage,
-    }
-  },
+function numberValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }

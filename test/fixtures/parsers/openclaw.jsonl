@@ -1,0 +1,5 @@
+{"type":"session","id":"openclaw-1","timestamp":"2026-05-04T00:00:00.000Z"}
+{"type":"message","timestamp":"2026-05-04T00:00:01.000Z","message":{"role":"user","content":"run command"}}
+{"type":"message","timestamp":"2026-05-04T00:00:02.000Z","message":{"role":"assistant","model":"open-model","content":[{"type":"toolCall","toolUseId":"call-1","toolName":"Bash","args":{"command":"bad"}}],"stopReason":"toolUse","usage":{"input":50,"output":10,"cost":{"total":0.01}}}}
+{"type":"message","timestamp":"2026-05-04T00:00:03.000Z","message":{"role":"toolResult","content":[{"type":"toolResult","toolUseId":"call-1","result":"error","isError":true}]}}
+{"type":"message","timestamp":"2026-05-04T00:00:04.000Z","message":{"role":"assistant","model":"open-model","content":"failed","stopReason":"stop","usage":{"input":60,"output":5,"cost":{"total":0.01}}}}

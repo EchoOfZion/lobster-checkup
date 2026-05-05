@@ -6,28 +6,17 @@
     "lobster-checkup": "./dist/cli/index.js"
   },
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "build": "npm run build:cli",
     "build:cli": "tsc -p tsconfig.cli.json",
-    "start": "next start",
-    "lint": "eslint",
+    "lint": "eslint src test",
+    "test": "node --import tsx --test",
     "checkup": "tsx src/cli/index.ts"
   },
-  "dependencies": {
-    "@upstash/redis": "^1.37.0",
-    "next": "16.2.4",
-    "react": "19.2.4",
-    "react-dom": "19.2.4"
-  },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.2.4",
-    "tailwindcss": "^4",
     "tsx": "^4.21.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "typescript-eslint": "^8.59.2"
   }
 }

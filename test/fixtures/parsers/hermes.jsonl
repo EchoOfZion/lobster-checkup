@@ -1,0 +1,5 @@
+{"role":"session_meta","model":"hermes-model","timestamp":"2026-05-04T00:00:00.000Z"}
+{"role":"user","content":"search","timestamp":"2026-05-04T00:00:01.000Z"}
+{"role":"assistant","content":"","tool_calls":[{"id":"hcall-1","type":"function","function":{"name":"search","arguments":"{\"query\":\"x\"}"}}],"timestamp":"2026-05-04T00:00:02.000Z","usage":{"input_tokens":40,"output_tokens":8,"cost":0.01}}
+{"role":"tool","tool_call_id":"hcall-1","content":"{\"success\":false,\"error\":\"nope\"}","timestamp":"2026-05-04T00:00:03.000Z"}
+{"role":"assistant","content":"no result","finish_reason":"stop","timestamp":"2026-05-04T00:00:04.000Z","usage":{"input_tokens":45,"output_tokens":4,"cost":0.01}}

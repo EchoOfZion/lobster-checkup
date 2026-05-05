@@ -1,8 +1,9 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
-    "module": "commonjs",
-    "lib": ["ES2020"],
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
     "outDir": "./dist",
     "rootDir": "./src",
     "strict": true,
@@ -17,11 +18,16 @@
   },
   "include": [
     "src/cli/**/*.ts",
-    "src/lib/**/*.ts",
+    "src/core/**/*.ts",
+    "src/sources/**/*.ts",
     "src/parsers/**/*.ts",
     "src/detectors/**/*.ts",
-    "src/scoring/**/*.ts",
-    "src/llm/**/*.ts"
+    "src/diagnosis/**/*.ts",
+    "src/evaluation/**/*.ts",
+    "src/policy/**/*.ts",
+    "src/review/**/*.ts",
+    "src/reporters/**/*.ts",
+    "src/trend/**/*.ts"
   ],
   "exclude": [
     "src/app/**",
