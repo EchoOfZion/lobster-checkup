@@ -1,187 +1,200 @@
 #!/usr/bin/env node
-// ============================================================
-// 龙虾体检 v4 — CLI 入口
-// ============================================================
+import { cwd } from 'node:process'
+import type { AgentSource, CheckupReport } from '../core/types'
+import { buildSessionDiagnoses } from '../diagnosis'
+import { runDetectors } from '../detectors'
+import { evaluateReportInputs } from '../evaluation'
+import { parseSessions } from '../parsers'
+import { loadPolicy } from '../policy'
+import { runSelfReview } from '../review'
+import { discoverSessions } from '../sources'
+import { buildTrendReport } from '../trend'
+import { writeLocalReports } from '../reporters/files'
+import { formatJsonReport, summarizeFindings } from '../reporters/json'
+import { renderTerminalReport } from '../reporters/terminal'
 
-// Load .env.local if present (for local config like HERMES_SSH_HOST)
-import { readFileSync, existsSync } from 'fs'
-import { resolve, dirname } from 'path'
-import { fileURLToPath } from 'url'
+type Options = {
+  command: 'checkup' | 'diff' | 'help'
+  source?: AgentSource
+  days: number
+  path?: string
+  format: 'text' | 'json'
+  review?: 'llm'
+  reviewProvider?: 'local' | 'codex'
+  trend: boolean
+  configPath?: string
+  outputRoot: string
+}
 
-const envPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../.env.local')
-if (existsSync(envPath)) {
-  for (const line of readFileSync(envPath, 'utf8').split('\n')) {
-    const trimmed = line.trim()
-    if (!trimmed || trimmed.startsWith('#')) continue
-    const eqIdx = trimmed.indexOf('=')
-    if (eqIdx > 0) {
-      const key = trimmed.slice(0, eqIdx)
-      const val = trimmed.slice(eqIdx + 1)
-      if (!process.env[key]) process.env[key] = val
-    }
+export async function main(argv = process.argv.slice(2)): Promise<void> {
+  const options = parseArgs(argv)
+  if (options.command === 'help') {
+    process.stdout.write(helpText())
+    return
   }
-}
-
-import { runCheckup, printReport, type CheckupOptions } from './commands/checkup'
-import { runDoctorFix } from './commands/doctor'
-import { runDiff } from './commands/diff'
-import { runSchedule } from './commands/schedule'
-
-function parseArgs(args: string[]): {
-  command: string
-  options: CheckupOptions & { diff?: boolean; schedule?: string; fix?: boolean; help?: boolean }
-} {
-  const options: CheckupOptions & { diff?: boolean; schedule?: string; fix?: boolean; help?: boolean } = {}
-  let command = 'checkup'
-  let i = 0
-
-  while (i < args.length) {
-    const arg = args[i]
-
-    switch (arg) {
-      case 'doctor':
-        command = 'doctor'
-        break
-      case '--fix':
-        options.fix = true
-        break
-      case '--behavior':
-        options.behavior = true
-        break
-      case '--security':
-        options.security = true
-        break
-      case '--cost':
-        options.cost = true
-        break
-      case '--enhance':
-        options.enhance = true
-        break
-      case '--export':
-        if (args[i + 1] === 'json') {
-          options.exportJson = true
-          i++
-        }
-        break
-      case '--diff':
-        options.diff = true
-        break
-      case '--schedule':
-        options.schedule = args[i + 1] || 'weekly'
-        i++
-        break
-      case '--no-upload':
-        options.noUpload = true
-        break
-      case '--path':
-        options.path = args[i + 1]
-        i++
-        break
-      case '--help':
-      case '-h':
-        options.help = true
-        break
-      default:
-        // Treat positional arg as path
-        if (!arg.startsWith('-') && arg !== 'doctor') {
-          options.path = arg
-        }
-        break
-    }
-    i++
-  }
-
-  // Resolve command
-  if (options.diff) command = 'diff'
-  if (options.schedule) command = 'schedule'
-  if (command === 'doctor' && options.fix) command = 'doctor-fix'
-
-  return { command, options }
-}
-
-function printHelp(): void {
-  console.log(`
-🦞 龙虾体检 v4 — AI Agent 健康诊断工具
-
-用法:
-  lobster-checkup                    # 完整体检
-  lobster-checkup <path>             # 指定 Session 文件/目录
-  lobster-checkup --behavior         # 仅行为检测
-  lobster-checkup --security         # 仅安全检测
-  lobster-checkup --cost             # 仅 Token 检测
-  lobster-checkup --enhance          # 仅增强建议
-  lobster-checkup --export json      # 导出病历卡 JSON
-  lobster-checkup --diff             # 对比上次体检
-  lobster-checkup --schedule weekly  # 配置定期体检
-  lobster-checkup --no-upload        # 不上传，仅本地输出
-  lobster-checkup doctor --fix       # 一键修复
-
-选项:
-  --path <path>        指定 Session 文件或目录路径
-  --behavior           仅运行行为检测域
-  --security           仅运行安全检测域
-  --cost               仅运行 Token 消耗检测域
-  --enhance            仅生成增强建议
-  --export json        输出完整 JSON 报告
-  --diff               与上次体检结果对比
-  --schedule <间隔>    配置定期体检 (daily/weekly/monthly)
-  --no-upload          不上传到 Web，仅保存本地
-  --help, -h           显示帮助
-
-环境变量:
-  ANTHROPIC_API_KEY          LLM 辅助检测用的 API Key
-  LOBSTER_CHECKUP_BASE_URL   Web 报告 API 地址
-`)
-}
-
-async function main(): Promise<void> {
-  const args = process.argv.slice(2)
-  const { command, options } = parseArgs(args)
-
-  if (options.help) {
-    printHelp()
+  if (options.command === 'diff') {
+    process.stderr.write('diff is not implemented in this MVP yet.\n')
+    process.exitCode = 1
     return
   }
 
-  // Load LLM config from environment
-  const apiKey = process.env.ANTHROPIC_API_KEY
-  if (apiKey) {
-    options.llmConfig = { apiKey }
+  const report = await runCheckup(options)
+  const written = writeLocalReports(report, options.outputRoot)
+  const reportWithOutput = {
+    ...report,
+    output: written,
   }
 
-  // Load base URL from environment
-  options.baseUrl = process.env.LOBSTER_CHECKUP_BASE_URL
-
-  switch (command) {
-    case 'checkup': {
-      const report = await runCheckup(options)
-
-      if (options.exportJson) {
-        console.log(JSON.stringify(report, null, 2))
-      } else {
-        printReport(report)
-      }
-      break
-    }
-
-    case 'doctor-fix':
-      await runDoctorFix(options.path || process.cwd())
-      break
-
-    case 'diff':
-      runDiff()
-      break
-
-    case 'schedule':
-      runSchedule(options.schedule!)
-      break
-
-    default:
-      printHelp()
+  if (options.format === 'json') {
+    process.stdout.write(formatJsonReport(reportWithOutput))
+  } else {
+    process.stdout.write(renderTerminalReport(report))
+    process.stdout.write(`JSON report: ${written.jsonPath}\nHTML report: ${written.htmlPath}\n`)
   }
 }
 
-main().catch((err) => {
-  console.error('错误:', err.message || err)
-  process.exit(1)
+async function runCheckup(options: Options): Promise<CheckupReport> {
+  const currentDir = cwd()
+  const loadedPolicy = loadPolicy(currentDir, options.configPath)
+  const { candidates, diagnostics } = discoverSessions({
+    cwd: currentDir,
+    days: options.days,
+    source: options.source,
+    path: options.path,
+  })
+  const sessions = parseSessions(candidates)
+  const findings = runDetectors(sessions, loadedPolicy.policy)
+  const evaluation = evaluateReportInputs(sessions, findings)
+  const diagnoses = buildSessionDiagnoses(sessions, findings)
+
+  const report: CheckupReport = {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    cwd: currentDir,
+    windowDays: options.days,
+    discovery: diagnostics,
+    sessions: candidates,
+    scannedSessions: sessions.length,
+    findings,
+    evaluation,
+    diagnoses,
+    policy: {
+      source: loadedPolicy.source,
+      path: loadedPolicy.path,
+    },
+    summary: summarizeFindings(findings),
+  }
+  if (options.trend) {
+    report.trend = buildTrendReport(report, options.outputRoot)
+  }
+  if (options.review === 'llm') {
+    report.review = await runSelfReview(report, {
+      mode: 'llm',
+      provider: options.reviewProvider || loadedPolicy.policy.reviewProvider,
+      cwd: currentDir,
+    })
+  }
+  return report
+}
+
+function parseArgs(args: string[]): Options {
+  const options: Options = {
+    command: 'checkup',
+    days: 7,
+    format: 'text',
+    trend: false,
+    outputRoot: '.lobster-checkup/reports',
+  }
+
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]
+    if (arg === 'diff') {
+      options.command = 'diff'
+      continue
+    }
+    if (arg === '--help' || arg === '-h') {
+      options.command = 'help'
+      continue
+    }
+    if (arg === '--source') {
+      options.source = parseSource(args[++index])
+      continue
+    }
+    if (arg === '--days') {
+      options.days = Number.parseInt(args[++index] || '7', 10)
+      continue
+    }
+    if (arg === '--path') {
+      options.path = args[++index]
+      continue
+    }
+    if (arg === '--format') {
+      options.format = args[++index] === 'json' ? 'json' : 'text'
+      continue
+    }
+    if (arg === '--review') {
+      options.review = args[++index] === 'llm' ? 'llm' : undefined
+      continue
+    }
+    if (arg === '--review-provider') {
+      options.reviewProvider = parseReviewProvider(args[++index])
+      continue
+    }
+    if (arg === '--trend') {
+      options.trend = true
+      continue
+    }
+    if (arg === '--config') {
+      options.configPath = args[++index]
+      continue
+    }
+    if (arg === '--output') {
+      options.outputRoot = args[++index] || options.outputRoot
+      continue
+    }
+    if (!arg.startsWith('-')) {
+      options.path = arg
+    }
+  }
+
+  return options
+}
+
+function parseSource(value: string | undefined): AgentSource | undefined {
+  if (
+    value === 'claude-code' ||
+    value === 'codex' ||
+    value === 'openclaw' ||
+    value === 'docker-openclaw' ||
+    value === 'hermes' ||
+    value === 'path'
+  ) return value
+  return undefined
+}
+
+function parseReviewProvider(value: string | undefined): 'local' | 'codex' | undefined {
+  if (value === 'local' || value === 'codex') return value
+  return undefined
+}
+
+function helpText(): string {
+  return `Lobster Checkup
+
+Usage:
+  lobster-checkup
+  lobster-checkup --format json
+  lobster-checkup --source claude-code|codex|openclaw|docker-openclaw|hermes
+  lobster-checkup --days 14
+  lobster-checkup --path <file-or-dir>
+  lobster-checkup --review llm
+  lobster-checkup --review llm --review-provider codex
+  lobster-checkup --trend
+  lobster-checkup --config .lobster-checkup.json
+  lobster-checkup diff
+`
+}
+
+main().catch((error) => {
+  process.stderr.write(`error: ${error instanceof Error ? error.message : String(error)}\n`)
+  process.exitCode = 1
 })

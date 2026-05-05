@@ -1,0 +1,5 @@
+{"timestamp":"2026-05-05T00:00:00.000Z","type":"session_meta","payload":{"id":"codex-1","cwd":"/tmp/work"}}
+{"timestamp":"2026-05-05T00:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"run command"}]}}
+{"timestamp":"2026-05-05T00:00:02.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call-1","arguments":"{\"cmd\":\"bad\"}"}}
+{"timestamp":"2026-05-05T00:00:03.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"Process exited with code 1\nerror"}}
+{"timestamp":"2026-05-05T00:00:04.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"failed"}]}}

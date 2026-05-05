@@ -1,16 +1,16 @@
-# Agent Autodiscovery CLI Redesign
+# Skill-First Agent Checkup Redesign
 
 ## Goal
 
-Rebuild Lobster Checkup as a CLI-first local diagnostic tool that users can run without knowing where their agent sessions live.
+Rebuild Lobster Checkup as a skill-first local diagnostic tool. The user should be able to ask an agent to "检测", "体检", or "check the agent", and the skill should know how to run the local diagnostic engine without asking for session paths.
 
-The default experience is:
+The user-facing experience is:
 
-```bash
-lobster-checkup
-```
+> 检测一下最近的 agent 运行情况
 
-The tool discovers recent local agent sessions, runs evidence-backed deterministic checks, and writes a terminal summary plus local report files.
+The skill reads `SKILL.md`, runs the bundled detector command, discovers recent local agent sessions, and reports evidence-backed findings.
+
+The CLI remains the deterministic execution engine, not the main product surface.
 
 ## Non-Goals
 
@@ -28,20 +28,52 @@ These are outside the MVP and require a separate design once the diagnostic core
 
 ## Product Principles
 
-1. No manual session hunting.
+1. Skill is the entrypoint.
+   The user asks for detection in natural language. The skill runs the detector and summarizes the result.
+
+2. No manual session hunting.
    Users should not need to know JSONL paths. `--path` remains only as a debug and support escape hatch.
 
-2. Evidence before advice.
+3. Evidence before advice.
    Every finding must include the source session, turn, detector name, confidence, and evidence excerpt or metric.
 
-3. Deterministic first.
+4. Deterministic first.
    The MVP reports only issues detected through reproducible rules. No LLM claims, inferred intent, or speculative diagnosis.
 
-4. Local by default.
+5. Local by default.
    Reports stay on disk unless a future explicit upload feature is added.
 
-5. Small enough to verify.
+6. Small enough to verify.
    The first version should pass typecheck, lint, and focused fixture tests for every supported source and detector.
+
+## Skill Contract
+
+The skill lives at `skills/lobster-checkup/SKILL.md`.
+
+Trigger examples:
+
+- "检测"
+- "体检"
+- "checkup"
+- "看看 agent 有没有问题"
+- "检查 Claude Code / OpenClaw / Hermes 最近有没有死循环或浪费"
+
+When triggered, the skill must:
+
+1. Run the local detector from the repository root.
+2. Prefer automatic source discovery.
+3. Use `--path` only if the user explicitly provides a file or directory.
+4. Report concise findings with evidence.
+5. Never auto-edit project configuration.
+6. Never upload session contents.
+
+The skill command should be stable and simple:
+
+```bash
+npx tsx src/cli/index.ts --format json
+```
+
+The agent using the skill may then summarize the JSON for the user.
 
 ## Supported Sources
 
@@ -83,7 +115,7 @@ Discovery rules:
 - If `state.db` exists, use it only for metadata when easy to query without adding native dependencies.
 - If SQLite access would require a native package, defer database integration and continue with JSONL discovery.
 
-## CLI Contract
+## Detector CLI Contract
 
 ```bash
 lobster-checkup
@@ -114,6 +146,12 @@ Terminal output:
 - Problems found by severity.
 - Top actionable fixes.
 - Report file paths.
+
+Machine-readable output:
+
+- `--format json` prints only the report JSON to stdout.
+- Human progress logs go to stderr.
+- This allows the skill to parse exact detector output without scraping terminal text.
 
 ## Internal Data Model
 
@@ -264,7 +302,7 @@ Evidence:
 
 ### JSON
 
-The JSON report is the source of truth. It contains:
+The JSON report is the source of truth for the skill and CLI. It contains:
 
 - Metadata.
 - Source discovery diagnostics.
@@ -309,7 +347,8 @@ Keep useful existing concepts, but reduce surface area:
 - Reuse existing parser knowledge where it is correct.
 - Replace incrementing finding ids with stable fingerprints.
 - Replace current scoring and lobster role system with plain severity counts.
-- Remove web storage and Next.js app from the MVP path.
+- Remove web storage, LLM checks, schedule, and doctor fixes from the MVP path.
+- Rewrite `skills/lobster-checkup/SKILL.md` around automatic detection, not manual CLI usage.
 
 The existing Next.js files can remain temporarily if deleting them would distract from the CLI rewrite, but they must not be part of the build or documented MVP.
 
@@ -320,6 +359,7 @@ The MVP is complete when:
 - `npm run lint` passes.
 - `npm run build:cli` passes.
 - `npm test` passes.
+- `skills/lobster-checkup/SKILL.md` tells an agent exactly how to run detection and summarize results.
 - `lobster-checkup` discovers current Claude Code sessions without a `--path`.
 - `lobster-checkup --path <fixture-dir>` writes local JSON and HTML reports.
 - Every reported issue has stable fingerprint, evidence, location, and recommendation.

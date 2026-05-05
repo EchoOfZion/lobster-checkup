@@ -1,0 +1,5 @@
+{"type":"summary","sessionId":"claude-1","timestamp":"2026-05-04T00:00:00.000Z"}
+{"type":"user","timestamp":"2026-05-04T00:00:01.000Z","message":{"role":"user","content":"check files"}}
+{"type":"assistant","timestamp":"2026-05-04T00:00:02.000Z","message":{"role":"assistant","model":"claude-test","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"file_path":".env"}}],"stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":20,"cost":{"total":0.01}}}}
+{"type":"user","timestamp":"2026-05-04T00:00:03.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"SECRET=abc","is_error":false}]}}
+{"type":"assistant","timestamp":"2026-05-04T00:00:04.000Z","message":{"role":"assistant","model":"claude-test","content":"done","stop_reason":"end_turn","usage":{"input_tokens":120,"output_tokens":10,"cost":{"total":0.02}}}}
